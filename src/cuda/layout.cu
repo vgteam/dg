@@ -2,6 +2,8 @@
 #include <cuda.h>
 #include <assert.h>
 #include "cuda_runtime_api.h"
+#include <openrand/philox.h>
+
 
 #define CUDACHECK(cmd) do {                         \
   cudaError_t err = cmd;                            \
@@ -23,59 +25,6 @@
 
 namespace cuda {
 
-__global__ void cuda_device_init(curandState_t *rnd_state_tmp, curandStateCoalesced_t *rnd_state) {
-    int32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    // initialize curandState with original curand implementation
-    curand_init(42+tid, tid, 0, &rnd_state_tmp[tid]);
-    // copy to coalesced data structure
-    rnd_state[blockIdx.x].d[threadIdx.x] = rnd_state_tmp[tid].d;
-    rnd_state[blockIdx.x].w0[threadIdx.x] = rnd_state_tmp[tid].v[0];
-    rnd_state[blockIdx.x].w1[threadIdx.x] = rnd_state_tmp[tid].v[1];
-    rnd_state[blockIdx.x].w2[threadIdx.x] = rnd_state_tmp[tid].v[2];
-    rnd_state[blockIdx.x].w3[threadIdx.x] = rnd_state_tmp[tid].v[3];
-    rnd_state[blockIdx.x].w4[threadIdx.x] = rnd_state_tmp[tid].v[4];
-}
-
-/**
- * @brief: Return 32-bits of pseudorandomness from an XORWOW generator. from "curand_kernel.h"
- * For some use cases, we don't need floating point uniform distribution. So we don't need to call `curand_uniform_coalesced` as below. We shall use this function. 
- * \param state - Pointer to state to update
- * \param thread_id - Thread id
- * \return 32-bits of pseudorandomness as an unsigned int, all bits valid to use.
-*/
-__device__ 
-unsigned int curand_coalesced(curandStateCoalesced_t *state, uint32_t thread_id) {
-    // Return 32-bits of pseudorandomness from an XORWOW generator. 
-    uint32_t t;
-    t = (state->w0[thread_id] ^ (state->w0[thread_id] >> 2));
-    state->w0[thread_id] = state->w1[thread_id];
-    state->w1[thread_id] = state->w2[thread_id];
-    state->w2[thread_id] = state->w3[thread_id];
-    state->w3[thread_id] = state->w4[thread_id];
-    state->w4[thread_id] = (state->w4[thread_id] ^ (state->w4[thread_id] << 4)) ^ (t ^ (t << 1));
-    state->d[thread_id] += 362437;    
-    return state->w4[thread_id] + state->d[thread_id];
-}
-
-__device__
-float curand_uniform_coalesced(curandStateCoalesced_t *state, uint32_t thread_id) {
-    // generate 32 bit pseudorandom value with XORWOW generator (see paper "Xorshift RNGs" by George Marsaglia);
-    // also used in curand library (see curand_kernel.h)
-    uint32_t t;
-    t = state->w0[thread_id] ^ (state->w0[thread_id] >> 2);
-    state->w0[thread_id] = state->w1[thread_id];
-    state->w1[thread_id] = state->w2[thread_id];
-    state->w2[thread_id] = state->w3[thread_id];
-    state->w3[thread_id] = state->w4[thread_id];
-    state->w4[thread_id] = (state->w4[thread_id] ^ (state->w4[thread_id] << 4)) ^ (t ^ (t << 1));
-    state->d[thread_id] += 362437;
-
-    uint32_t rnd_uint = state->d[thread_id] + state->w4[thread_id];
-
-    // convert to float; see curand_uniform.h
-    return _curand_uniform(rnd_uint);
-}
-
 
 __device__ double compute_zeta(uint32_t n, double theta) {
     double ans = 0.0;
@@ -86,7 +35,7 @@ __device__ double compute_zeta(uint32_t n, double theta) {
 }
 
 // this function uses the cuda operation __powf, which is a faster but less precise alternative to the pow operation
-__device__ uint32_t cuda_rnd_zipf(curandStateCoalesced_t *rnd_state, uint32_t n, double theta, double zeta2, double zetan) {
+__device__ uint32_t cuda_rnd_zipf(openrand::Philox &rnd_state, uint32_t n, double theta, double zeta2, double zetan) {
     double alpha = 1.0 / (1.0 - theta);
     double denominator = 1.0 - zeta2 / zetan;
     if (denominator == 0.0) {
@@ -95,7 +44,7 @@ __device__ uint32_t cuda_rnd_zipf(curandStateCoalesced_t *rnd_state, uint32_t n,
     double eta = (1.0 - __powf(2.0 / double(n), 1.0 - theta)) / (denominator);
 
     // INFO: curand_uniform generates random values between 0.0 (excluded) and 1.0 (included)
-    double u = 1.0 - curand_uniform_coalesced(rnd_state, threadIdx.x);
+    double u = 1.0 - rnd_state.rand<float>();;
     double uz = u * zetan;
 
     int64_t val = 0;
@@ -112,12 +61,6 @@ __device__ uint32_t cuda_rnd_zipf(curandStateCoalesced_t *rnd_state, uint32_t n,
     return uint32_t(val);
 }
 
-
-static __device__ __inline__ uint32_t __mysmid(){
-    uint32_t smid;
-    asm volatile("mov.u32 %0, %%smid;" : "=r"(smid));
-    return smid;
-}
 
 /**
 * @brief: update the coordinates of two visualization nodes in the 2D layout space
@@ -188,23 +131,30 @@ void update_pos_gpu(int64_t &n1_pos_in_path, uint32_t &n1_id, int &n1_offset,
 }
 
 __global__ 
-void gpu_layout_kernel(int iter, cuda::layout_config_t config, curandStateCoalesced_t *rnd_state, double eta, double *zetas, 
+void gpu_layout_kernel(int iter, cuda::layout_config_t config, double eta, double *zetas, 
                                    cuda::node_data_t node_data, cuda::path_data_t path_data, int sm_count) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t smid = __mysmid();
-    assert(smid < sm_count);
 
-    curandStateCoalesced_t *thread_rnd_state = &rnd_state[smid];
+    //curandStateCoalesced_t *thread_rnd_state = &rnd_state[smid];
+    openrand::Philox rng(tid, iter); // unique stream for each thread at each iteration
+    
+    // need upto 4 coin flips per thread, this has 32 bits, 32 flips
+    const int coin_flips = rng.rand<int>();
+
+    const bool flip1 = coin_flips & 1;
+    const bool flip2 = coin_flips & 2;
+    const bool flip3 = coin_flips & 4;
+    const bool flip4 = coin_flips & 8;
 
     __shared__ bool cooling[BLOCK_SIZE / WARP_SIZE]; 
     if (threadIdx.x % WARP_SIZE == 1) {
-        cooling[threadIdx.x / WARP_SIZE] = (iter >= config.first_cooling_iteration) || (curand_coalesced(thread_rnd_state, threadIdx.x) % 2 == 0);
+        cooling[threadIdx.x / WARP_SIZE] = (iter >= config.first_cooling_iteration) || flip1;
     }
 
     // select path
     __shared__ uint32_t first_step_idx[BLOCK_SIZE / WARP_SIZE]; // BLOCK_SIZE/WARP_SIZE = 1024/32 = 32
     // each thread picks its own path
-    uint32_t step_idx = curand_coalesced(thread_rnd_state, threadIdx.x) % path_data.total_path_steps;
+    uint32_t step_idx = rng.uniform<int>(0, path_data.total_path_steps);
 
     uint32_t path_idx = path_data.element_array[step_idx].pidx;
     path_t p = path_data.paths[path_idx];
@@ -215,14 +165,14 @@ void gpu_layout_kernel(int iter, cuda::layout_config_t config, curandStateCoales
     assert(p.step_count > 1);
 
     // INFO: curand_uniform generates random values between 0.0 (excluded) and 1.0 (included)
-    uint32_t s1_idx = curand_coalesced(thread_rnd_state, threadIdx.x) % p.step_count;
+    uint32_t s1_idx = rng.uniform<int>(0, p.step_count);
     assert(s1_idx < p.step_count);
     uint32_t s2_idx;
 
     if (cooling[threadIdx.x / WARP_SIZE]) {
         bool backward;
         uint32_t jump_space;
-        if (s1_idx > 0 && (curand_coalesced(thread_rnd_state, threadIdx.x) % 2 == 0) || s1_idx == p.step_count-1) {
+        if (s1_idx > 0 && flip2 || s1_idx == p.step_count-1) {
             // go backward
             backward = true;
             jump_space = min(config.space, s1_idx);
@@ -236,12 +186,12 @@ void gpu_layout_kernel(int iter, cuda::layout_config_t config, curandStateCoales
             space = config.space_max + (jump_space - config.space_max) / config.space_quantization_step + 1;
         }
 
-        uint32_t z_i = cuda_rnd_zipf(thread_rnd_state, jump_space, config.theta, zetas[2], zetas[space]);
+        uint32_t z_i = cuda_rnd_zipf(rng, jump_space, config.theta, zetas[2], zetas[space]);
 
         s2_idx = backward ? s1_idx - z_i : s1_idx + z_i;
     } else {
         do {
-            s2_idx = curand_coalesced(thread_rnd_state, threadIdx.x) % p.step_count;
+            s2_idx = rng.uniform<int>(0, p.step_count);
         } while (s1_idx == s2_idx);
     }
     assert(s1_idx < p.step_count);
@@ -260,7 +210,7 @@ void gpu_layout_kernel(int iter, cuda::layout_config_t config, curandStateCoales
     n2_pos_in_path = std::abs(n2_pos_in_path);
 
     uint32_t n1_seq_length = node_data.nodes[n1_id].seq_length;
-    bool n1_use_other_end = (curand_coalesced(thread_rnd_state, threadIdx.x) % 2 == 0) ? true : false;
+    bool n1_use_other_end = flip3 ? true : false;
     if (n1_use_other_end) {
         n1_pos_in_path += uint64_t{n1_seq_length};
         n1_use_other_end = !n1_is_rev;
@@ -269,7 +219,7 @@ void gpu_layout_kernel(int iter, cuda::layout_config_t config, curandStateCoales
     }
 
     uint32_t n2_seq_length = node_data.nodes[n2_id].seq_length;
-    bool n2_use_other_end = (curand_coalesced(thread_rnd_state, threadIdx.x) % 2 == 0) ? true : false;
+    bool n2_use_other_end = flip4 ? true : false;
     if (n2_use_other_end) {
         n2_pos_in_path += uint64_t{n2_seq_length};
         n2_use_other_end = !n2_is_rev;
@@ -427,17 +377,20 @@ void gpu_layout(layout_config_t config, const odgi::graph_t &graph, std::vector<
     const uint64_t block_size = BLOCK_SIZE;
     uint64_t block_nbr = (config.min_term_updates + block_size - 1) / block_size; 
 
-    curandState_t *rnd_state_tmp;
-    curandStateCoalesced_t *rnd_state;
-    CUDACHECK(cudaMallocManaged(&rnd_state_tmp, sm_count * block_size * sizeof(curandState_t)));
-    CUDACHECK(cudaMallocManaged(&rnd_state, sm_count * sizeof(curandStateCoalesced_t)));
-    cuda_device_init<<<sm_count, block_size>>>(rnd_state_tmp, rnd_state);
-    CUDACHECK(cudaGetLastError());
-    CUDACHECK(cudaDeviceSynchronize());
-    cudaFree(rnd_state_tmp);
+    // curandState_t *rnd_state_tmp;
+    // curandStateCoalesced_t *rnd_state;
+    // CUDACHECK(cudaMallocManaged(&rnd_state_tmp, sm_count * block_size * sizeof(curandState_t)));
+    // CUDACHECK(cudaMallocManaged(&rnd_state, sm_count * sizeof(curandStateCoalesced_t)));
+    // cuda_device_init<<<sm_count, block_size>>>(rnd_state_tmp, rnd_state);
+    // CUDACHECK(cudaGetLastError());
+    // CUDACHECK(cudaDeviceSynchronize());
+    // cudaFree(rnd_state_tmp);
+
+    // one curandStateCoalesced_t for each sm, not each block. So several blocks 
+    // share the same curandStateCoalesced_t.
 
     for (int iter = 0; iter < config.iter_max; iter++) {
-        gpu_layout_kernel<<<block_nbr, block_size>>>(iter, config, rnd_state, etas[iter], zetas, node_data, path_data, sm_count);
+        gpu_layout_kernel<<<block_nbr, block_size>>>(iter, config, etas[iter], zetas, node_data, path_data, sm_count);
         // check error
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
@@ -467,7 +420,7 @@ void gpu_layout(layout_config_t config, const odgi::graph_t &graph, std::vector<
     cudaFree(path_data.paths);
     cudaFree(path_data.element_array);
     cudaFree(zetas);
-    cudaFree(rnd_state);
+    // cudaFree(rnd_state);
 
     return;
 }

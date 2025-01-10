@@ -637,6 +637,7 @@ add_library(odgi_objs OBJECT
 )
 if (USE_GPU)
   target_sources(odgi_objs PRIVATE "${CMAKE_SOURCE_DIR}/src/cuda/layout.cu")
+  # target_compile_options(odgi_objs PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas="-v">)
 endif (USE_GPU)
 
 set(odgi_DEPS
@@ -704,8 +705,19 @@ set(odgi_INCLUDES
   "${xoshiro_INCLUDE}"
   "${atomicbitvector_INCLUDE}"
   "${mio_INCLUDE}")
+
+include(FetchContent)
+FetchContent_Declare(
+  crng
+  GIT_REPOSITORY https://github.com/msu-sparta/OpenRAND.git
+  GIT_TAG        main
+)
+
+FetchContent_MakeAvailable(crng)
+  
 if (USE_GPU)
   list(APPEND odgi_INCLUDES "${CUDA_INCLUDE_DIRS}")
+  list(APPEND odgi_INCLUDES "${crng_SOURCE_DIR}/include")
 endif (USE_GPU)
 
 set(odgi_LIBS
@@ -857,10 +869,16 @@ else (NOT PIC)
   add_dependencies(libodgi_shared ${odgi_DEPS})
 endif (NOT PIC)
 
+
 add_executable(odgi
   $<TARGET_OBJECTS:odgi_objs>
   ${CMAKE_SOURCE_DIR}/src/main.cpp)
 target_link_libraries(odgi ${odgi_LIBS})
+# if (USE_GPU)
+#   message(STATUS "OPENRAND: ${crng_SOURCE_DIR}")
+#   target_link_libraries(odgi crng)
+#   target_include_directories(odgi PRIVATE ${crng_SOURCE_DIR}/include)
+# endif (USE_GPU)
 set_target_properties(odgi PROPERTIES OUTPUT_NAME "odgi")
 
 
