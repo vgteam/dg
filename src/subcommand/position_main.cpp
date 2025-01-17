@@ -638,7 +638,8 @@ int main_position(int argc, char** argv) {
                                              const hash_set<uint64_t>& path_set,
                                              const pos_t& pos, lift_result_t& lift,
                                              const step_handle_t target_step_handle,
-                                             const bool path_jaccard) {
+                                             const bool path_jaccard,
+                                             const path_handle_t* target_path=NULL) {
             // unpacking our args
             int64_t& path_offset = lift.path_offset;
             step_handle_t& ref_hit = lift.ref_hit;
@@ -665,7 +666,7 @@ int main_position(int argc, char** argv) {
                         graph.for_each_step_on_handle(
                             h, [&](const step_handle_t& s) {
                                    auto p = graph.get_path_handle_of_step(s);
-                                   if (!got_hit && path_set.count(as_integer(p))) {
+                                   if (!got_hit && path_set.count(as_integer(p)) && (target_path==NULL||p==*target_path)) {
                                        //std::cerr << "thought I got a hit" << std::endl;
                                        got_hit = true;
                                        hit = s;
@@ -913,22 +914,28 @@ int main_position(int argc, char** argv) {
                 std::cout << path_range.data << "\t"
                           << id(pos_begin) << "," << offset(pos_begin) << "," << (is_rev(pos_begin)?"-":"+") << "\t"
                           << id(pos_end) << "," << offset(pos_end) << "," << (is_rev(pos_end)?"-":"+") << std::endl;
-            } else if (get_position(target_graph, ref_path_set, pos_begin, lift_begin, step_handle_graph_pos_begin, true)
-                       && get_position(target_graph, ref_path_set, pos_end, lift_end, step_handle_graph_pos_end, true)) {
-                bool ref_is_rev = false;
-                path_handle_t p_begin = target_graph.get_path_handle_of_step(lift_begin.ref_hit);
-                path_handle_t p_end = target_graph.get_path_handle_of_step(lift_end.ref_hit);
-                // XXX TODO assert these to be equal......
+            } else {
+
+                for (const path_handle_t& P: ref_paths) {
+                    if (get_position(target_graph, ref_path_set, pos_begin, lift_begin, step_handle_graph_pos_begin, true,&P)
+                        && get_position(target_graph, ref_path_set, pos_end, lift_end, step_handle_graph_pos_end, true,&P)) {
+
+                        bool ref_is_rev = false;
+                        path_handle_t p_begin = target_graph.get_path_handle_of_step(lift_begin.ref_hit);
+                        path_handle_t p_end = target_graph.get_path_handle_of_step(lift_end.ref_hit);
+                        // XXX TODO assert these to be equal......
 #pragma omp critical (cout)
-                std::cout << path_range.data << "\t"
-                          << target_graph.get_path_name(p_begin) << ","
-                          << lift_begin.path_offset << ","
-                          << (lift_begin.is_rev_vs_ref ? "-" : "+") << "\t"
-                          << target_graph.get_path_name(p_end) << ","
-                          << lift_end.path_offset << ","
-                          << (lift_end.is_rev_vs_ref ? "-" : "+") << "\t"
-                          << (lift_begin.is_rev_vs_ref ^ path_range.is_rev ? "-" : "+") << std::endl;
-                    //<< walked_to_hit_ref << "\t" << (is_rev_vs_ref ? "-" : "+") << std::endl;
+                        std::cout << path_range.data << "\t"
+                              << target_graph.get_path_name(p_begin) << ","
+                              << lift_begin.path_offset << ","
+                              << (lift_begin.is_rev_vs_ref ? "-" : "+") << "\t"
+                              << target_graph.get_path_name(p_end) << ","
+                              << lift_end.path_offset << ","
+                              << (lift_end.is_rev_vs_ref ? "-" : "+") << "\t"
+                              << (lift_begin.is_rev_vs_ref ^ path_range.is_rev ? "-" : "+") << std::endl;
+                              //<< walked_to_hit_ref << "\t" << (is_rev_vs_ref ? "-" : "+") << std::endl;
+                    }
+                }
             }
         }
     }
