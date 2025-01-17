@@ -22,6 +22,14 @@ const std::string& node_t::get_sequence() const {
     return sequence;
 }
 
+void node_t::set_volatile(void) {
+    dynamic = true;
+}
+
+void node_t::set_static(void) {
+    dynamic = false;
+}
+
 // encode an internal representation of an external id (adding if none exists)
 uint64_t node_t::encode(const uint64_t& other_id) {
     uint64_t delta = to_delta(other_id);
@@ -333,6 +341,7 @@ void node_t::clear_encoding() {
 void node_t::copy(const node_t& other) {
     clear();
     id = other.id;
+    dynamic = other.dynamic;
     sequence = other.sequence;
     edges = other.edges;
     decoding = other.decoding;
@@ -439,7 +448,7 @@ void node_t::load(std::istream& in) {
     in.read((char*)sequence.c_str(), len*sizeof(uint8_t));
     in.read((char*)&id, sizeof(id));
     edges.load(in);
-    decoding.load(in); 
+    decoding.load(in);
     paths.load(in);
     //display();
 }

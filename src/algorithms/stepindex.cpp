@@ -275,14 +275,14 @@ path_step_index_t::path_step_index_t(const PathHandleGraph& graph,
         node_offset[0] = 0; // first offset is 0 by definition
         for (auto& node_step : steps_by_node) {
             auto& idx = std::get<0>(node_step);
-            //auto& offset = std::get<1>(node_step); // just used for sorting
+            auto& offset = std::get<1>(node_step); // just used for sorting
             auto& step = std::get<2>(node_step);
             //std::cerr << "idx = " << idx << " " << as_integers(step)[0] << ":" << as_integers(step)[1] << std::endl;
             if (idx != last_idx) {
                 node_offset[idx] = node_steps.size();
             }
             step_offset[step_mphf->lookup(step)] = node_steps.size();
-            node_steps.push_back(step);
+            node_steps.push_back(std::make_pair(step, offset));
             last_idx = idx;
         }
         if (last_idx != node_count-1) {
@@ -313,7 +313,7 @@ uint64_t path_step_index_t::n_steps_on_node(const nid_t& id) const {
     return node_offset[idx+1] - node_offset[idx];
 }
 
-std::pair<bool, step_handle_t>
+std::pair<bool, std::pair<step_handle_t, uint64_t>>
 path_step_index_t::get_next_step_on_node(const nid_t& id, const step_handle_t& step) const {
     auto node_idx = get_node_idx(id);
     auto curr_steps = node_offset[node_idx];
@@ -323,12 +323,12 @@ path_step_index_t::get_next_step_on_node(const nid_t& id, const step_handle_t& s
     if (has_next) {
         return std::make_pair(true, node_steps[step_idx+1]);
     } else {
-        step_handle_t empty_step;
+        std::pair<step_handle_t,uint64_t> empty_step;
         return std::make_pair(false, empty_step);
     }
 }
 
-std::pair<bool, step_handle_t>
+std::pair<bool, std::pair<step_handle_t, uint64_t>>
 path_step_index_t::get_prev_step_on_node(const nid_t& id, const step_handle_t& step) const {
     auto curr_steps = node_offset[get_node_idx(id)];
     auto step_idx = step_offset[get_step_idx(step)];
@@ -336,7 +336,7 @@ path_step_index_t::get_prev_step_on_node(const nid_t& id, const step_handle_t& s
     if (has_prev) {
         return std::make_pair(true, node_steps[step_idx-1]);
     } else {
-        step_handle_t empty_step;
+        std::pair<step_handle_t,uint64_t> empty_step;
         return std::make_pair(false, empty_step);
     }
 }

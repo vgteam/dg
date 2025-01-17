@@ -521,6 +521,12 @@ public:
     /// get the backing node rank for a given node id
     uint64_t get_node_rank(const nid_t& node_id) const;
 
+    /// set the graph into static mode, which avoids spinlocks
+    void set_static(void);
+
+    /// set the graph into volatile mode, which uses (spin)locks for dynamic hogwilding
+    void set_volatile(void);
+
 };
 
 //const static uint64_t path_begin_marker = std::numeric_limits<uint64_t>::max();

@@ -67,6 +67,7 @@ endif()
 # Set optimization through command line; see INSTALL.md
 if (${CMAKE_BUILD_TYPE} MATCHES Release)
   set(EXTRA_FLAGS "-Ofast -march=native -pipe -msse4.2 -funroll-all-loops") #  -fprofile-generate=../pgo")
+  #set(EXTRA_FLAGS "-O0 -march=native -msse4.2 -pg") # for profiling with gprof
   set(CMAKE_CXX_FLAGS_RELEASE "-DNDEBUG") # reset CXX_FLAGS to be able to replace -O3 with -Ofast
 endif ()
 

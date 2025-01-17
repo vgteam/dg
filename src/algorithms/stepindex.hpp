@@ -99,7 +99,7 @@ struct path_step_index_t {
     // map to the beginning of a range in node_steps
     std::vector<uint64_t> node_offset;
     // record the steps in positional order by node (index given in node_offset)
-    std::vector<step_handle_t> node_steps;
+    std::vector<std::pair<step_handle_t, uint64_t>> node_steps;
     // map from step to an index in step_offset
     boophf_step_t* step_mphf = nullptr;
     // index in handle_steps for the given step
@@ -114,9 +114,11 @@ struct path_step_index_t {
     uint64_t n_steps_on_node(const nid_t& id) const;
     // these functions require, but do not check, that our step is in the indexed path
     // next step on node (sorted by position in path), (false, _) if there is no next step
-    std::pair<bool, step_handle_t> get_next_step_on_node(const nid_t& id, const step_handle_t& step) const;
+    std::pair<bool, std::pair<step_handle_t, uint64_t>>
+    get_next_step_on_node(const nid_t& id, const step_handle_t& step) const;
     // prev step on node (sorted by position in path), (false, _) if there is no next step
-    std::pair<bool, step_handle_t> get_prev_step_on_node(const nid_t& id, const step_handle_t& step) const;
+    std::pair<bool, std::pair<step_handle_t, uint64_t>>
+    get_prev_step_on_node(const nid_t& id, const step_handle_t& step) const;
 };
 
 }

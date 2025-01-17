@@ -26,6 +26,7 @@ const uint8_t PATH_RECORD_LENGTH = 6;
 class node_t {
     uint64_t id = 0;
     std::atomic_flag lock = ATOMIC_FLAG_INIT;
+    bool dynamic = true;
     std::string sequence;
     dyn::hacked_vector edges;
     dyn::hacked_vector decoding;
@@ -82,16 +83,20 @@ class node_t {
             return type & (1 << 3);
         }
     };
-    
+
 public:
     node_t(void); // constructor
     // locking methods
     inline void get_lock(void) {
-        while (lock.test_and_set(std::memory_order_acquire))  // acquire lock
-            ; // spin
+        if (dynamic) {
+            while (lock.test_and_set(std::memory_order_acquire))  // acquire lock
+                ; // spin
+        }
     }
     inline void clear_lock(void) {
-        lock.clear(std::memory_order_release);
+        if (dynamic) {
+            lock.clear(std::memory_order_release);
+        }
     }
     inline const uint64_t edge_count(void) const { return edges.size()/EDGE_RECORD_LENGTH; }
     inline const uint64_t path_count(void) const { return paths.size()/PATH_RECORD_LENGTH; }
@@ -114,6 +119,8 @@ public:
     void set_sequence(const std::string& seq);
     const uint64_t& get_id(void) const;
     void set_id(const uint64_t& new_id);
+    void set_volatile(void);
+    void set_static(void);
     void for_each_edge(const std::function<bool(uint64_t other_id,
                                                 bool on_rev,
                                                 bool other_rev,
