@@ -66,8 +66,10 @@ public:
 
 std::vector<step_handle_t> untangle_cuts(
     const PathHandleGraph& graph,
-    const step_handle_t& start,
-    const step_handle_t& end,
+    const path_handle_t& path,
+    const std::string& path_name,
+    const path_step_index_t::step_it& start,
+    const path_step_index_t::step_it& end,
     const step_index_t& step_index,
     const path_step_index_t& self_index,
     const std::function<bool(const handle_t&)>& is_cut);

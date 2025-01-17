@@ -226,14 +226,13 @@ path_step_index_t::path_step_index_t(const PathHandleGraph& graph,
                                      const uint64_t& nthreads) {
     // iterate through the paths, recording steps in the structure we'll use to build the mphf
     {
-        std::vector<step_handle_t> steps;
         std::vector<nid_t> nodes;
         graph.for_each_step_in_path(
             path, [&](const step_handle_t& step) {
                 steps.push_back(step);
                 nodes.push_back(graph.get_id(graph.get_handle_of_step(step)));
             });
-        steps.push_back(graph.path_end(path));
+        steps.push_back(graph.path_end(path)); // dangerous...
         // sort the steps, nb. they're unique
         ips4o::parallel::sort(steps.begin(), steps.end(), std::less<>(), nthreads);
         // build the hash function (quietly)
@@ -254,15 +253,12 @@ path_step_index_t::path_step_index_t(const PathHandleGraph& graph,
         // here, we sort steps by handle and then position
         // and build our handle->step list and step->offset maps
         // these are steps sorted by the bbhash of their node id, and then their offset in the path
-        std::vector<std::tuple<uint64_t, uint64_t, step_handle_t>> steps_by_node;
+        std::vector<std::tuple<uint64_t, uint64_t, step_handle_t, step_it>> steps_by_node;
         uint64_t offset = 0;
-        graph.for_each_step_in_path(
-            path, [&](const step_handle_t& step) {
-                steps_by_node.push_back(std::make_tuple(node_mphf->lookup(graph.get_id(graph.get_handle_of_step(step))),
-                                                        offset,
-                                                        step));
-                offset += graph.get_length(graph.get_handle_of_step(step));
-            });
+        for (step_it step = steps.begin(); step != steps.end(); ++step) {
+            steps_by_node.emplace_back(node_mphf->lookup(graph.get_id(graph.get_handle_of_step(*step))), offset, *step, step);
+            offset += graph.get_length(graph.get_handle_of_step(*step));
+        }
         if (offset == 0) {
             std::cerr << "[odgi::algorithms::stepindex] unable to index empty path " << graph.get_path_name(path) << std::endl;
             std::abort();
@@ -275,14 +271,15 @@ path_step_index_t::path_step_index_t(const PathHandleGraph& graph,
         node_offset[0] = 0; // first offset is 0 by definition
         for (auto& node_step : steps_by_node) {
             auto& idx = std::get<0>(node_step);
-            //auto& offset = std::get<1>(node_step); // just used for sorting
+            auto& offset = std::get<1>(node_step); // just used for sorting
             auto& step = std::get<2>(node_step);
+            auto& it_step = std::get<3>(node_step);
             //std::cerr << "idx = " << idx << " " << as_integers(step)[0] << ":" << as_integers(step)[1] << std::endl;
             if (idx != last_idx) {
                 node_offset[idx] = node_steps.size();
             }
             step_offset[step_mphf->lookup(step)] = node_steps.size();
-            node_steps.push_back(step);
+            node_steps.push_back(std::make_pair(it_step, offset));
             last_idx = idx;
         }
         if (last_idx != node_count-1) {
@@ -313,7 +310,7 @@ uint64_t path_step_index_t::n_steps_on_node(const nid_t& id) const {
     return node_offset[idx+1] - node_offset[idx];
 }
 
-std::pair<bool, step_handle_t>
+std::pair<bool, std::pair<path_step_index_t::step_it, uint64_t>>
 path_step_index_t::get_next_step_on_node(const nid_t& id, const step_handle_t& step) const {
     auto node_idx = get_node_idx(id);
     auto curr_steps = node_offset[node_idx];
@@ -321,25 +318,36 @@ path_step_index_t::get_next_step_on_node(const nid_t& id, const step_handle_t& s
     auto step_idx = step_offset[get_step_idx(step)];
     bool has_next = step_idx + 1 < next_steps;
     if (has_next) {
-        return std::make_pair(true, node_steps[step_idx+1]);
+        return std::pair(true, node_steps[step_idx+1]);
     } else {
-        step_handle_t empty_step;
-        return std::make_pair(false, empty_step);
+        auto empty_step = steps.end();
+        return std::pair(false, std::pair(empty_step, 0));
     }
 }
 
-std::pair<bool, step_handle_t>
+std::pair<bool, std::pair<path_step_index_t::step_it, uint64_t>>
 path_step_index_t::get_prev_step_on_node(const nid_t& id, const step_handle_t& step) const {
     auto curr_steps = node_offset[get_node_idx(id)];
     auto step_idx = step_offset[get_step_idx(step)];
     bool has_prev = step_idx > curr_steps;
     if (has_prev) {
-        return std::make_pair(true, node_steps[step_idx-1]);
+        return std::pair(true, node_steps[step_idx-1]);
     } else {
-        step_handle_t empty_step;
-        return std::make_pair(false, empty_step);
+        auto empty_step = steps.end();
+        return std::pair(false, std::pair(empty_step, 0));
     }
 }
+
+// get the first step in the path
+path_step_index_t::step_it path_step_index_t::path_begin(void) const {
+    return steps.begin();
+}    
+
+// get the last step in the path
+path_step_index_t::step_it path_step_index_t::path_back(void) const {
+    return std::prev(std::prev(steps.end()));
+}
+
 
 }
 }

@@ -7,70 +7,96 @@ using namespace handlegraph;
 
 std::vector<step_handle_t> untangle_cuts(
     const PathHandleGraph& graph,
-    const step_handle_t& _start,
-    const step_handle_t& _end,
+    const path_handle_t& path,
+    const std::string& path_name,
+    const path_step_index_t::step_it& _start,
+    const path_step_index_t::step_it& _end,
     const step_index_t& step_index,
     const path_step_index_t& self_index,
     const std::function<bool(const handle_t&)>& is_cut) {
-    auto path = graph.get_path_handle_of_step(_start);
-    auto path_name = graph.get_path_name(path);
-    // this assumes that the end is not inclusive
+
     /*
     std::cerr << "untangle_cuts(" << path_name << ", "
               << step_index.get_position(_start) << ", "
               << step_index.get_position(_end) << ")" << std::endl;
     */
-    // TODO make a vector of handles we've seen as segment starts and of segment ends
-    // to avoid duplicating work
 
-    std::vector<bool> seen_fwd_step(self_index.step_count);
-    std::vector<bool> seen_rev_step(self_index.step_count);
-    auto is_seen_fwd_step = [&seen_fwd_step,&self_index](const step_handle_t& step) {
-        return seen_fwd_step[self_index.get_step_idx(step)];
+    ska::flat_hash_set<const step_handle_t*> seen_fwd_step;
+    ska::flat_hash_set<const step_handle_t*> seen_rev_step;
+    auto is_seen_fwd_step = [&seen_fwd_step,&self_index](const path_step_index_t::step_it& step) {
+        return seen_fwd_step.count(&*step);
     };
-    auto is_seen_rev_step = [&seen_rev_step,&self_index](const step_handle_t& step) {
-        return seen_rev_step[self_index.get_step_idx(step)];
+    auto is_seen_rev_step = [&seen_rev_step,&self_index](const path_step_index_t::step_it& step) {
+        return seen_rev_step.count(&*step);
     };
-    auto mark_seen_fwd_step = [&seen_fwd_step,&self_index](const step_handle_t& step) {
-        seen_fwd_step[self_index.get_step_idx(step)] = true;
+    auto mark_seen_fwd_step = [&seen_fwd_step,&self_index](const path_step_index_t::step_it& step) {
+        bool state = seen_fwd_step.count(&*step);
+        seen_fwd_step.insert(&*step);
+        return state;
     };
-    auto mark_seen_rev_step = [&seen_rev_step,&self_index](const step_handle_t& step) {
-        seen_rev_step[self_index.get_step_idx(step)] = true;
+    auto mark_seen_rev_step = [&seen_rev_step,&self_index](const path_step_index_t::step_it& step) {
+        bool state = seen_rev_step.count(&*step);
+        seen_rev_step.insert(&*step);
+        return state;
     };
-    std::vector<step_handle_t> cut_points;
-    std::deque<std::pair<step_handle_t, step_handle_t>> todo;
+
+    std::vector<std::pair<uint64_t, step_handle_t>> cut_points;
+    auto clean_cut_points = [&cut_points,&step_index,&graph](void) {
+        std::sort(cut_points.begin(),
+                  cut_points.end(),
+                  [&](const std::pair<uint64_t,step_handle_t>& a,
+                      const std::pair<uint64_t,step_handle_t>& b) {
+                      return a.first < b.first;
+                  });
+        std::vector<step_handle_t> c;
+        for (auto& x : cut_points) c.push_back(x.second);
+        // then take unique positions
+        c.erase(std::unique(c.begin(),
+                            c.end()),
+                c.end());
+        return c;
+    };
+
+    std::deque<std::pair<path_step_index_t::step_it, path_step_index_t::step_it>> todo;
     todo.push_back(std::make_pair(_start, _end));
     while (!todo.empty()) {
         auto start = todo.front().first;
         auto end = todo.front().second;
-        uint64_t start_pos = step_index.get_position(start, graph);
-        uint64_t end_pos = step_index.get_position(end, graph);
+        uint64_t start_pos = step_index.get_position(*start, graph);
+        uint64_t curr_pos = start_pos;
+        uint64_t end_pos = step_index.get_position(*end, graph);
         //std::cerr << "todo: " << start_pos << " " << end_pos << std::endl;
-        cut_points.push_back(start);
+        cut_points.push_back(std::pair(curr_pos, *start));
         todo.pop_front();
         // we go forward until we see a loop, where the other step has position < end_pos and > start_pos
-        for (step_handle_t step = start; step != end; step = graph.get_next_step(step)) {
+        for (auto step = start; step != end; ++step) {
             //  we take the first and shortest loop we find
-            // TODO change this, it can be computed based on the node length
-            if (is_seen_fwd_step(step)) {
+            handle_t handle = graph.get_handle_of_step(*step);
+            if (mark_seen_fwd_step(step)) {
+                curr_pos += graph.get_length(handle);
                 continue;
             }
-            auto curr_pos = step_index.get_position(step, graph);
-            handle_t handle = graph.get_handle_of_step(step);
             if (is_cut(handle)) {
-                cut_points.push_back(step);
+                /*
+                if (curr_pos != step_index.get_position(step, graph)) {
+                    std::cerr << "position error fwd " << curr_pos << " " << step_index.get_position(step, graph) << std::endl;
+                    exit(1);
+                }
+                */
+                cut_points.push_back(std::pair(curr_pos, *step));
+                //cut_points.push_back(std::make_pair(step_index.get_position(step, graph), step));
             }
-            mark_seen_fwd_step(step);
             bool found_loop = false;
-            step_handle_t other;
-            auto x = self_index.get_next_step_on_node(graph.get_id(handle), step);
+            path_step_index_t::step_it other;
+            uint64_t other_pos = 0;
+            auto x = self_index.get_next_step_on_node(graph.get_id(handle), *step);
             if (x.first) {
-                auto other_pos = step_index.get_position(x.second, graph);
+                other_pos = x.second.second;
                 if (other_pos > start_pos
                     && other_pos < end_pos
                     && other_pos > curr_pos
-                    && !is_seen_fwd_step(x.second)) {
-                    other = x.second;
+                    && !is_seen_fwd_step(x.second.first)) {
+                    other = x.second.first;
                     found_loop = true;
                 }
             }
@@ -80,7 +106,10 @@ std::vector<step_handle_t> untangle_cuts(
                 //std::cerr << "Found loop! " << step_index.get_position(step) << " " << step_index.get_position(other) << std::endl;
                 todo.push_back(std::make_pair(step, other));
                 //  we then step forward to the loop end and continue iterating
+                curr_pos = other_pos + graph.get_length(graph.get_handle_of_step(*other));
                 step = other;
+            } else {
+                curr_pos += graph.get_length(handle);
             }
         }
         // TODO this block is the same as the previous one, but in reverse
@@ -88,35 +117,41 @@ std::vector<step_handle_t> untangle_cuts(
         // forward and reverse version together
         // now we reverse it
         step_handle_t path_begin = graph.path_begin(path);
-        if (end == path_begin || !graph.has_previous_step(end)) {
-            return cut_points;
+        if (*end == path_begin || !graph.has_previous_step(*end)) {
+            return clean_cut_points();
         }
+        //step_handle_t _step = graph.get_previous_step(end);
+        curr_pos = step_index.get_position(*end, graph) + graph.get_length(graph.get_handle_of_step(*end));
+        //cut_points.push_back(std::make_pair(curr_pos, end));
         //std::cerr << "reversing" << std::endl;
-        for (step_handle_t step = end;
-             step_index.get_position(step, graph) > start_pos;
-             step = graph.get_previous_step(step)) {
-            if (is_seen_rev_step(step)) {
+        for (auto step = end; step != start; --step) {
+            handle_t handle = graph.get_handle_of_step(*step);
+            curr_pos -= graph.get_length(handle);
+            if (mark_seen_rev_step(step)) {
                 continue;
             }
             //  we take the first and shortest loop we find
-            // TODO change this, it can be computed based on the node length
-            auto curr_pos = step_index.get_position(step, graph);
-            handle_t handle = graph.get_handle_of_step(step);
             if (is_cut(handle)) {
-                cut_points.push_back(step);
+                /*
+                if (curr_pos != step_index.get_position(step, graph)) {
+                    std::cerr << "position error rev " << curr_pos << " " << step_index.get_position(step, graph) << std::endl;
+                    exit(1);
+                }
+                */
+                cut_points.push_back(std::pair(curr_pos, *step));
             }
-            mark_seen_rev_step(step);
             //std::cerr << "rev on step " << graph.get_id(handle) << " " << curr_pos << std::endl;
             bool found_loop = false;
-            step_handle_t other;
-            auto x = self_index.get_prev_step_on_node(graph.get_id(handle), step);
+            path_step_index_t::step_it other;
+            auto x = self_index.get_prev_step_on_node(graph.get_id(handle), *step);
+            uint64_t other_pos = 0;
             if (x.first) {
-                auto other_pos = step_index.get_position(x.second, graph);
+                other_pos = x.second.second;
                 if (other_pos > start_pos
                     && other_pos < end_pos
                     && other_pos < curr_pos
-                    && !is_seen_rev_step(x.second)) {
-                    other = x.second;
+                    && !is_seen_rev_step(x.second.first)) {
+                    other = x.second.first;
                     found_loop = true;
                 }
             }
@@ -125,25 +160,13 @@ std::vector<step_handle_t> untangle_cuts(
                 //  to cut_points we add the start position, the result from recursion, and our end position
                 todo.push_back(std::make_pair(other, step));
                 //  we then step forward to the loop end and continue iterating
+                curr_pos = other_pos;
                 step = other;
             }
         }
-        cut_points.push_back(end);
     }
     // and sort
-    std::sort(cut_points.begin(),
-              cut_points.end(),
-              [&](const step_handle_t& a,
-                  const step_handle_t& b) {
-                  return step_index.get_position(a, graph) < step_index.get_position(b, graph);
-              });
-    //auto prev_size = cut_points.size();
-    // then take unique positions
-    cut_points.erase(std::unique(cut_points.begin(),
-                                 cut_points.end()),
-                     cut_points.end());
-    //std::cerr << "prev_size " << prev_size << " curr_size " << cut_points.size() << std::endl;
-    return cut_points;
+    return clean_cut_points();
 }
 
 void write_cuts(
@@ -275,12 +298,16 @@ segment_map_t::segment_map_t(
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads)
     for (uint64_t i = 0; i < paths.size(); ++i) { //auto& path : paths) {
         auto& path = paths[i];
+        auto path_name = graph.get_path_name(path);
+        //std::cerr << "path " << path_name << std::endl;
         auto self_index = path_step_index_t(graph, path, 1);
         all_cuts[i] =
             merge_cuts(
                 untangle_cuts(graph,
-                              graph.path_begin(path),
-                              graph.path_back(path),
+                              path,
+                              path_name,
+                              self_index.path_begin(),
+                              self_index.path_back(),
                               step_index,
                               self_index,
                               is_cut
@@ -758,11 +785,14 @@ void untangle(
         for (auto& path : paths) {
             // test path_step_index_t
             auto self_index = path_step_index_t(graph, path, threads_per);
+            auto path_name = graph.get_path_name(path);
             std::vector<step_handle_t> cuts
             = merge_cuts(
                     untangle_cuts(graph,
-                                  graph.path_begin(path),
-                                  graph.path_back(path),
+                                  path,
+                                  path_name,
+                                  self_index.path_begin(),
+                                  self_index.path_back(),
                                   step_index,
                                   self_index,
                                   [](const handle_t& h) { return false; }),
@@ -835,7 +865,7 @@ void untangle(
             if (show_progress) {
                 progress->finish();
             }
-            
+
             // todo: split up the graph space into regions of cut_every bp
             // write a map from node ids to segments
             // walk along every path
@@ -869,7 +899,7 @@ void untangle(
             if (show_progress) {
                 progress->finish();
             }
-            
+
         }
     } else {
         uint64_t num_cut_points_read = 0;
@@ -961,11 +991,14 @@ void untangle(
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads)
     for (auto& query : queries) {
         auto self_index = path_step_index_t(graph, query, threads_per);
+        auto query_name = graph.get_path_name(query);
         std::vector<step_handle_t> cuts
             = merge_cuts(
                 untangle_cuts(graph,
-                              graph.path_begin(query),
-                              graph.path_back(query),
+                              query,
+                              query_name,
+                              self_index.path_begin(),
+                              self_index.path_back(),
                               step_index,
                               self_index,
                               [&cut_nodes,&graph](const handle_t& h) {

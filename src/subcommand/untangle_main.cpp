@@ -62,8 +62,10 @@ int main_untangle(int argc, char **argv) {
     args::Flag make_self_dotplot(debugging_opts, "DOTPLOT", "Render a table showing the positional dotplot of the query against itself.",
                                  {'S', "self-dotplot"});
 	args::Group step_index_opts(parser, "[ Step Index Options ]");
-	args::ValueFlag<std::string> _step_index(step_index_opts, "FILE", "Load the step index from this *FILE*. The file name usually ends with *.stpidx*. (default: build the step index from scratch with a sampling rate of 8).",
+	args::ValueFlag<std::string> _step_index(step_index_opts, "FILE", "Load the step index from this *FILE*. The file name usually ends with *.stpidx*. (default: build the step index from scratch with sampling rate 8).",
 											 {'a', "step-index"});
+	args::ValueFlag<uint64_t> _step_sampling(step_index_opts, "N", "Sampling rate to use for step index construction. (default: 8).",
+											 {'D', "step-sampling"});
     args::Group threading(parser, "[ Threading ]");
     args::ValueFlag<uint64_t> nthreads(
         threading, "N", "Number of threads to use for parallel operations.", {'t', "threads"});
@@ -110,6 +112,7 @@ int main_untangle(int argc, char **argv) {
                                              graph);
             }
         }
+        graph.set_static();
     }
 
     // path loading
@@ -208,13 +211,14 @@ int main_untangle(int argc, char **argv) {
         }
     } else {
 		if (!_step_index) {
+            auto step_sampling = _step_sampling ? args::get(_step_sampling) : 8;
 			if (progress) {
 				std::cerr
-						<< "[odgi::untangle] warning: no step index specified. Building one with a sample rate of 8. This may take additional time. "
-						   "A step index can be provided via -a, --step-index. A step index can be built using odgi stepindex."
-						<< std::endl;
+                    << "[odgi::untangle] warning: no step index specified. Building one with a sample rate of " << step_sampling << ". This may take additional time. "
+                    "A step index can be provided via -a, --step-index. A step index can be built using odgi stepindex."
+                    << std::endl;
 			}
-			algorithms::step_index_t step_index(graph, paths, num_threads, progress, 8);
+			algorithms::step_index_t step_index(graph, paths, num_threads, progress, step_sampling);
 			algorithms::untangle(graph,
 								 query_paths,
 								 target_paths,
